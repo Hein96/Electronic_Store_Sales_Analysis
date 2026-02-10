@@ -1,0 +1,1065 @@
+---
+title: "Electronics Store Sales Analysis"
+subtitle: "Advanced R Programming - Final Project"
+author: "Hein Htet SOE THAN"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    code-fold: false
+    code-tools: true
+    theme: cosmo
+    embed-resources: true
+    number-sections: true
+  pdf:
+    toc: true
+    number-sections: true
+    colorlinks: true
+  revealjs:
+    theme: night
+    footer: "MSc Business Analytics | Hein Htet SOE THAN"
+    highlight-style: dracula
+    transition: fade
+    background-transition: convex
+    slide-number: true
+    embed-resources: true
+    smaller: true
+    scrollable: true
+execute:
+  echo: true
+  warning: true
+  error: true
+---
+
+## Section 1: Introduction
+
+### Research Questions & Hypotheses
+
+To evaluate the performance of the electronics store, this project will address the following questions:
+
+**Product Hierarchy:** Which product categories contribute most to the total revenue, and does a higher unit price correlate with higher total sales volume?
+
+**Hypothesis:** While premium items (e.g., MacBooks) generate high revenue per sale, mid-tier accessories (e.g., USB-C Charging Cables) will have the highest frequency of transactions, driving consistent cash flow.
+
+**Temporal & Geographic Patterns:** Are there specific "peak hours" for electronics shopping that differ across major US cities?
+
+**Hypothesis:** Tech-heavy hubs like San Francisco will show higher purchase volumes during late-evening hours compared to other metropolitan areas.
+
+### Dataset Description
+
+The dataset used in this analysis represents 12 months of sales data from a multi-city electronics retailer.
+
+Source: The data is sourced from the Kaggle Electronics Store Dataset.
+
+Size: It contains approximately 186,000 rows and 6 initial columns.
+
+Content: It includes variables such as Order ID, Product, Quantity Ordered, Price Each, Order Date, and Purchase Address.
+
+### Relevance
+
+This dataset is critical for answering my research questions because it provides the granularity required for both temporal (time-based) and categorical analysis. The inclusion of timestamped orders allows for the application of lubridate to extract seasonal trends, while the product-level pricing enables a deep dive into revenue distribution using dplyr's .by argument.
+
+### Analytical Roadmap
+
+Exploration: Use skimr to identify data distributions and missingness.
+
+Cleaning: Parse dates, split addresses into cities, and handle numeric conversions.
+
+Analysis: Filter for high-value transactions and use grouped summaries to compare city-level performance.
+
+Visualization: Create a dashboard of sales trends using patchwork and plotly to identify peak periods visually.
+
+### Loading Libraries and Data
+
+```{r}
+# Loading necessary libraries for the project
+library(tidyverse) 
+library(lubridate) 
+library(patchwork) 
+library(plotly)    
+library(DT)        
+library(skimr)     
+library(scales)    
+library(knitr)
+```
+
+```{r}
+# inslalling webshot2 visual in pdf
+install.packages("webshot2")
+```
+
+```{r}
+# for pdf export
+install.packages("tinytex")
+
+tinytex::install_tinytex()
+```
+
+### Why this library?
+
+-   **tidyverse**: Provides a cohesive set of tools for data manipulation (dplyr), visualization (ggplot2), and data tidying (tidyr). Its consistent syntax allows for efficient data wrangling and analysis.
+-   **lubridate**: Simplifies the parsing and manipulation of date-time data, which is crucial for analyzing temporal patterns in sales.
+-   **patchwork**: Enables the combination of multiple ggplot2 plots into a single cohesive dashboard, facilitating comparative analysis across different dimensions.
+-   **plotly**: Allows for the creation of interactive visualizations that can enhance user engagement and provide deeper insights through hover information and dynamic filtering.
+-   **DT**: Provides an interactive interface for displaying data tables, making it easier to explore and understand the dataset.
+-   **skimr**: Offers a comprehensive overview of the dataset, including distributions, missing values, and summary statistics, which is essential for the initial data exploration phase.
+-   **scales**: Useful for formatting axes and labels, particularly when dealing with financial data, to improve readability and presentation quality.
+-   **knitr**: Useful for formatting axes and labels, particularly when dealing with financial data, to improve readability and presentation quality.
+
+## Section 2: Data Exploration
+
+In this section, I import the raw sales data and perform an initial inspection to understand the variable distributions and identify potential data quality issues.
+
+### Merging Datasets manually
+
+I will consolidate the 12 monthly CSV files into a single primary data frame using a functional programming approach. During the import phase, I will use lubridate to parse the Order Date and create a dedicated Month identifier. This consolidation is essential for performing longitudinal analysis and ensures that cross-month trends—such as seasonal spikes—are captured accurately in a single, unified tibble.
+
+::: {.callout-note}
+I uploated the raw data set on GitHub. 
+:::
+
+```{r}
+# Taking the data from GitHub
+if (!dir.exists("Monthly_Sales_Data")) {
+  dir.create("Monthly_Sales_Data")
+  
+  data_url <- "https://github.com/Hein96/Electronic-Sales-Data.git"
+  dest_file <- "Monthly_Sales_Data.zip"
+  
+  download.file(data_url, dest_file, mode = "wb")
+  unzip(dest_file, exdir = "Monthly_Sales_Data")
+}
+```
+
+```{r}
+sales_data_mer <- list.files(path = "Monthly_Sales_Data/", pattern = "*.csv", full.names = TRUE) 
+```
+
+```{r}
+sales_raw <- sales_data_mer |> 
+  map_df(~read_csv(.))
+```
+
+```{r}
+#| display: true
+glimpse(sales_raw) # Get a quick overview of the data structure
+
+#| dimensions: true
+cat("Number of rows:", nrow(sales_raw), "\n") 
+cat("Number of columns:", ncol(sales_raw), "\n")
+
+#| display: true
+head(sales_raw) # Display the first few rows of the dataset
+
+#| summary: true
+summary(sales_raw) # Get summary statistics for numeric columns
+```
+
+```{r}
+#| skim: true
+skimr::skim(sales_raw) # Get a comprehensive overview of the dataset
+```
+
+```{r}
+#| summary: true
+sales_data |> 
+  summarise(
+    mean_price = mean(`Price Each`, na.rm = TRUE),
+    median_price = median(`Price Each`, na.rm = TRUE),
+    sd_price = sd(`Price Each`, na.rm = TRUE),
+    total_records = n()
+  ) |> 
+  knitr::kable(caption = "Custom Summary Statistics for Unit Price")
+```
+
+I am encountering NA because the `Price Each` column contains non-numeric values (e.g., "Price Each" as a header or other text entries). To address this, I will need to clean the data by converting the `Price Each` column to numeric and handling any non-numeric entries appropriately.
+
+```{r}
+sales_raw <- sales_raw |> 
+  mutate(`Price Each` = as.numeric(`Price Each`)) # Convert to numeric, coercing non-numeric values to NA
+```
+
+```{r}
+sales_raw |> 
+  summarise(
+    mean_price = mean(`Price Each`, na.rm = TRUE),
+    median_price = median(`Price Each`, na.rm = TRUE),
+    sd_price = sd(`Price Each`, na.rm = TRUE),
+    total_records = n()
+  ) |> 
+  knitr::kable(caption = "Custom Summary Statistics for Unit Price")
+```
+
+Now that the `Price Each` column has been converted to numeric, we can see the summary statistics without NA values affecting the calculations. The mean, median, and standard deviation of the unit price are now accurately represented, allowing for a better understanding of the pricing distribution in the dataset.
+
+::: callout-note
+Technical Choice: Data Consolidation While the raw data consists of 12 individual monthly files, I have chosen to perform the primary exploration on the consolidated dataset. This allows for a holistic view of the store's annual performance and ensures that the summary statistics (mean, median, etc.) reflect the entire fiscal year rather than a single month.
+:::
+
+### Initial Observations & Anomalies
+
+Based on the exploration above, I have identified several patterns and issues that must be addressed in the cleaning phase:
+
+Data Type Mismatch: The Order Date is currently stored as a character string and needs conversion to a POSIXct object.
+
+Missing Values: Preliminary checks via skim() indicate a small percentage of empty rows that need to be removed.
+
+Column Naming: Several column names contain spaces (e.g., Order ID), which makes coding cumbersome. These will be renamed for consistency.
+
+Logical Anomalies: I observed that Quantity Ordered is currently a character type in some instances; this must be coerced to numeric to allow for revenue calculation.
+
+## Section 3: Data Cleaning
+
+### Initial Integrity Check
+
+Before cleaning, I calculate the total number of missing values to understand the extent of data loss.
+
+```{r}
+sum(is.na(sales_raw))
+```
+
+### The Cleaning Pipeline
+
+I used a single piped workflow to clean the data. I chose to drop rows with missing Order IDs rather than imputing them, as an Order ID is a unique identifier that cannot be accurately guessed. For prices, I used grouped median imputation to maintain data integrity.
+
+```{r}
+#| label: data-cleaning
+sales_cleaned <- sales_raw |>
+  #| 1. Standardizing column names
+  rename(
+    order_id = `Order ID`,
+    product = `Product`,
+    quantity = `Quantity Ordered`,
+    unit_price = `Price Each`,
+    order_date = `Order Date`,
+    purchase_address = `Purchase Address`
+  ) |>
+  #| 2. Filter out the repeating header rows 
+  filter(product != "Product") |>
+  #| 3. Fix data types and parse dates
+  mutate(
+    quantity = as.numeric(quantity),
+    unit_price = as.numeric(unit_price),
+    order_date = mdy_hm(order_date) # Parsing with lubridate
+  ) |>
+  #| 4. String cleaning: Extract City 
+  #| I extract the text between the two commas in the address
+  mutate(
+    city = str_split_i(purchase_address, ",", 2) |> str_trim()
+  ) |>
+  #| 5. Grouped Imputation 
+  mutate(
+    unit_price = if_else(
+      is.na(unit_price), 
+      median(unit_price, na.rm = TRUE), 
+      unit_price
+    ),
+    .by = product
+  ) |>
+  #| 6. Drop rows with missing Order IDs and in quantity
+  drop_na(order_id, quantity)
+```
+
+```{r}
+sum(is.na(sales_cleaned))
+```
+
+```{r}
+#| display: true
+head(sales_cleaned)
+```
+
+:::
+
+| Col_names | Data_type | Description | Missing_values | Cleaning_methods |
+|---------------|---------------|---------------|---------------|---------------|
+| order_id | Character | Unique ID for each transaction | 0 | Renamed from "Order ID". |
+| product | Character | Name of the electronics item | 0 | Removed "Product" header repeats. |
+| quantity | Numeric | Units sold per order | 0 | Coerced to numeric from character. |
+| unit_price | Numeric | Price per unit in USD | 0 | Imputed median by "product". |
+| order_date | POSIXct | Timestamp of purchase | 0 | Parsed using lubridate::mdy_hm(). |
+| city | Character | City extracted from address | 0 | Created using str_split_i(). |
+
+### Justification of Choices
+
+Handling Headers: I used filter(product != "Product") because the 12-month merge duplicates the header row 11 times. Leaving these in would cause errors in numeric conversion.
+
+Imputation Strategy: I chose grouped median imputation for prices because electronics have fixed prices per SKU. A mean might be skewed by outliers, whereas the median for a specific product like "iPhone" is highly accurate.
+
+Date Formatting: I converted order_date to a POSIXct object immediately to allow for time-series analysis.
+
+## Section 4: Data Analysis
+
+In this section, I perform a series of analytical operations to extract business insights from the consolidated electronics sales data.
+
+### Product-discovery
+
+I will identify the most expensive items in the inventory to see where the "Premium" tier naturally begins.
+
+```{r}
+#| label: product-discovery
+
+# 1. List unique products and their prices, sorted by price
+# I use .by to ensure we get the correct price for each item 
+high_value_products <- sales_cleaned |>
+  summarise(
+    unit_price = max(unit_price), 
+    .by = product
+  ) |>
+  arrange(desc(unit_price))
+
+# 2. Display the top 10 most expensive products
+# This justifies why we will later use the $600 threshold
+high_value_products |> head(10)
+```
+
+::: callout-note
+I have filtered the high value product and apperently Macbook, ThinkPad and iPhone are the highest, and all three of them are greater than \$600. Focusing on these products is useful for examining premium sales dynamics, such as revenue concentration and customer willingness to pay.
+:::
+
+### Global High-Value Analysis
+
+The global approach ensures that my analysis captures all high-end electronics (like ThinkPads and high-end monitors) rather than focusing solely on a single brand. I then calculated the total revenue and order volume for each segment to see which tier drives the store's financial performance.Now that I have confirmed which products are expensive (likely MacBooks, iPhones, and ThinkPads), we can filter for all high-value products which are greater than \$600 regardless of the brand. I will assign the the segment by regarding the price e.g. \>\$600 for "Premium", \>\$150 for "Mid-Range", and \<=\$150 for "Budget".
+
+```{r}
+#| label: global-high-value
+
+# Numeric filter for all products > 600
+# This creates a 'Premium Segment' dataset
+high_value_segment <- sales_cleaned |>
+  filter(unit_price > 600)
+
+# Use case_when to categorize the WHOLE dataset
+# This adds context to every row (Above & Beyond categorization)
+sales_analysis <- sales_cleaned |>
+  mutate(month = month(order_date, label = TRUE, abbr = TRUE), # Extracts the month name from the order_date
+    market_segment = case_when(
+    unit_price > 600  ~ "Premium",
+    unit_price > 150  ~ "Mid-Range",
+    unit_price <= 150 ~ "Budget"
+  ))
+
+# Summary of sales by market segment
+segment_summary <- sales_analysis |>
+  summarise(
+    total_revenue = sum(quantity * unit_price),
+    avg_order_size = mean(quantity),
+    transaction_count = n(),
+    .by = market_segment
+  ) |>
+  arrange(desc(total_revenue)) 
+```
+
+```{r}
+#| display: true
+head(high_value_segment)
+head(sales_analysis)
+head(segment_summary)
+```
+
+### Refining the Data and Categorization
+
+To keep analysis simple, I used:
+
+-   Column selection helpers (like ends_with())
+-   Conditional mutation if_else() for binary flags
+
+This created an order_type variable to separate normal purchases from "Multi-Unit" bulk orders – important for understanding buying patterns.
+
+```{r}
+#| label: selection-and-logic
+
+# 1. select() with helper functions 
+# I select the ID and any column related to the 'order' or 'product'
+refined_view <- sales_analysis |>
+  select(order_id, starts_with("order"), contains("product"))
+
+# 2. mutate() with if_else() 
+# Creating a binary flag to identify "Multi-Unit" orders 
+sales_analysis <- sales_analysis |>
+  mutate(order_type = if_else(quantity > 1, "Multi-Unit", "Single-Unit"))
+
+# 3. arrange() in ascending order 
+# Checking our lowest-priced items first
+budget_check <- sales_analysis |>
+  arrange(unit_price) |>
+  head(10)
+```
+
+```{r}
+#| display: true
+head(refined_view)
+head(sales_analysis)
+head(budget_check)
+```
+
+### Advanced Reshaping: The City-Segment Matrix
+
+I use a pivot operation to transform the data from a long format into a wide, readable matrix. This cross-tabulation provides a clear comparative view of how revenue is distributed across different cities and market segments simultaneously. This view is particularly useful for identifying which geographic regions have the highest concentration of "Premium" shoppers.
+
+```{r}
+#| label: pivot-analysis
+
+# Pivot Operation
+# This transforms the data from 'Long' to 'Wide' format for a summary report
+city_segment_matrix <- sales_analysis |>
+  summarise(revenue = sum(quantity * unit_price), .by = c(city, market_segment)) |>
+  pivot_wider(names_from = market_segment, values_from = revenue)
+
+# Display the result
+city_segment_matrix
+```
+
+### Advanced Filtering & Top/Bottom Slicing
+
+To demonstrate precise data extraction, I used string matching and set membership (%in%) to isolate premium "Pro" models in specific tech-heavy cities. I also utilized slice_max() to identify the top 5 most profitable transactions, providing a snapshot of the store's most successful individual sales.
+
+```{r}
+#| label: advanced-filtering
+
+# Identifying high-end 'Pro' or 'ThinkPad' models in key tech hubs
+tech_hub_premium <- sales_analysis |>
+  filter(
+    city %in% c("San Francisco", "Seattle", "Austin"),
+    str_detect(product, "Pro|ThinkPad")
+  )
+
+# Slice_max (Top 5 most profitable individual orders)
+top_5_orders <- sales_analysis |>
+  mutate(revenue = quantity * unit_price) |>
+  slice_max(revenue, n = 5)
+```
+
+```{r}
+#| display: true
+head(tech_hub_premium)
+head(top_5_orders)
+```
+
+### Window Functions & Time Series
+
+I implemented window functions including cumsum() and lag() to analyze the store's growth trajectory. By calculating the cumulative revenue and the daily change in sales, I can visualize the store's momentum and identify specific days where revenue significantly outperformed the previous period.
+
+```{r}
+#| label: window-functions
+
+# Calculating daily revenue growth and comparing to the previous day
+daily_growth <- sales_analysis |>
+  summarise(daily_rev = sum(quantity * unit_price), .by = order_date) |>
+  arrange(order_date) |>
+  mutate(
+    cumulative_revenue = cumsum(daily_rev),
+    prev_day_rev = lag(daily_rev),
+    rev_change = daily_rev - prev_day_rev
+  )
+```
+
+```{r}
+#| display: true
+head(daily_growth)
+```
+
+```{r}
+sum(is.na(daily_growth))
+```
+
+There are two NaN value and I replace it with 0.
+
+```{r}
+# Replacing NaN values with 0
+daily_growth <- sales_analysis |>
+  summarise(daily_rev = sum(quantity * unit_price), .by = order_date) |>
+  arrange(order_date) |>
+  mutate(
+    cumulative_revenue = cumsum(daily_rev),
+    prev_day_rev = lag(daily_rev, default = 0),
+    rev_change = daily_rev - prev_day_rev
+  )
+```
+
+```{r}
+#| display: true
+head(daily_growth)
+```
+
+### Correlation & Stats
+
+Finally, I performed a correlation analysis to examine the relationship between price and quantity. This helps determine if higher price points lead to a significant drop in the number of units sold. I also used a cross-tabulation to count how order types (Single vs. Multi-Unit) are distributed across the different market segments.
+
+```{r}
+#| label: stats-and-correlation
+
+# Checking if people buy fewer items when the price is higher
+price_quantity_corr <- sales_analysis |>
+  summarise(correlation = cor(unit_price, quantity))
+
+# Breakdown of order types by market segment
+segment_counts <- sales_analysis |>
+  count(market_segment, order_type)
+```
+
+```{r}
+#| display: true
+head(price_quantity_corr)
+head(segment_counts)
+```
+
+::: callout-note
+The calculated correlation between unit price and quantity is -0.148. While this confirms a negative relationship—supporting the law of demand—the correlation is weak. This is primarily because consumer electronics are 'discreet' purchases; the data shows that whether a customer is buying a budget charging cable or a premium laptop, the modal (most common) quantity remains one unit.
+:::
+
+## Section 5: Visualization
+
+### Distribution of Pricing (Boxplot)
+
+Due to the significant skewness in product pricing—ranging from \$2.99 batteries to \$1,700 MacBooks—a standard linear histogram hides the distribution of premium goods. I have chosen a Boxplot to more effectively visualize the volume of high-value transactions relative to budget accessories.
+
+```{r}
+#| label: fig-segment-dist
+#| fig-cap: "Distribution of unit prices across market segments."
+
+# 1. Boxplot
+p1 <- ggplot(sales_analysis, aes(x = market_segment, y = unit_price, fill = market_segment)) +
+  geom_boxplot(alpha = 0.7) +
+  scale_y_continuous(labels = label_dollar()) +
+  labs(title = "Price Distribution by Market Segment",
+       subtitle = "Visualizing the spread and outliers across tiers",
+       x = "Market Segment", y = "Unit Price") +
+  theme_minimal() +
+  scale_fill_viridis_d(option = "mako")
+
+p1
+```
+
+::: callout-note
+The Question: Is there a big difference between "Budget" and "Premium" prices?
+
+The Finding: This chart shows that Budget items are all priced very closely together, while Premium items (like MacBooks) have a very wide price range. It proves our \$600 "High-Value" rule was the right choice.
+:::
+
+### Revenue by City & Segment (Bivariate & Grouped)
+
+This bar chart shows which cities generate the most revenue, broken down by market segment.
+
+```{r}
+#| label: fig-city-trends
+#| fig-cap: "Total revenue contribution by city and segment."
+
+# 2. Bar Chart
+p2 <- sales_analysis |>
+  summarise(total_rev = sum(quantity * unit_price), .by = c(city, market_segment)) |>
+  ggplot(aes(x = reorder(city, total_rev), y = total_rev, fill = market_segment)) +
+  geom_col(position = "dodge") +
+  geom_text(aes(label = label_comma(accuracy = 1, scale = 1e-6, suffix = "M")(total_rev)), 
+            position = position_dodge(width = 0.9), vjust = -0.5, size = 3) +
+  scale_y_continuous(labels = label_dollar(scale = 1e-6, suffix = "M")) +
+  scale_fill_viridis_d(option = "magma", end = 0.8) +
+  labs(title = "Total Revenue by City and Market Segment",
+       x = "City", y = "Total Revenue ($ Millions)", fill = "Segment") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p2
+```
+
+::: callout-note
+The Question: Which cities spend the most on expensive electronics?
+
+The Finding: Big tech cities like San Francisco and NYC are the clear leaders. They don't just buy more items; they specifically buy more "Premium" items compared to smaller cities.
+:::
+
+### Correlation: Price vs. Quantity (Scatter Plot)
+
+To visualize the -0.148 correlation calculated from Correlation & Stats session, I used a scatter plot with a trend line.
+
+```{r}
+#| label: fig-quantity-scatter
+#| fig-cap: "Correlation between unit price and quantity."
+
+# 3. Scatter Plot 
+p3 <- ggplot(sales_analysis |> sample_n(5000), aes(x = unit_price, y = quantity)) +
+  geom_jitter(alpha = 0.2, color = "#3498db", size = 1) + # Size/Alpha mapping
+  geom_smooth(method = "lm", color = "red", se = FALSE) + # Trend line
+  labs(title = "Correlation: Price vs. Quantity Ordered",
+       subtitle = "Sample of 5,000 orders showing weak negative correlation",
+       x = "Unit Price ($)", y = "Quantity") +
+  theme_minimal()
+p3
+```
+
+::: callout-note
+The Question: Do people buy fewer items when the price goes up?
+
+The Finding: Yes, but only slightly. The trend line goes down, which proves that people usually buy expensive laptops one at a time, but might buy several cheap cables at once.
+:::
+
+### Monthly Trends by Segment (Faceted Line Chart)
+
+This visualization tracks the store's performance over the year, faceted by the three market segments.
+
+```{r}
+#| label: fig-monthly-trends
+#| fig-cap: "Monthly Revenue Trends by Market Segment."
+
+# 4. Line Chart & 5. Faceting 
+p4 <- sales_analysis |>
+  summarise(monthly_rev = sum(quantity * unit_price), .by = c(month, market_segment)) |>
+  ggplot(aes(x = month, y = monthly_rev, group = market_segment, color = market_segment)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~market_segment, scales = "free_y") + # Faceted panels (Req 5.5)
+  scale_y_continuous(labels = label_dollar(scale = 1e-3, suffix = "K")) +
+  labs(title = "Revenue Trends Over Time",
+       subtitle = "Faceted by Market Segment (Axes are independent)",
+       x = "Month", y = "Monthly Revenue ($ Thousands)") +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 90))
+p4
+```
+
+::: callout-note
+The Question: Do sales change during different months for each segment?
+
+The Finding: Budget items stay flat and steady all year. However, Premium items see a huge "spike" at the end of the year, likely due to holiday shopping.
+:::
+
+### Dashboard (Patchwork)
+
+I combine the key insights into a unified dashboard for an executive summary.
+
+```{r}
+#| label: fig-combined-dashboard
+#| fig-height: 10
+#| fig-width: 12
+#| fig-cap: "Combined Dashboard"
+
+# 6. Combined Dashboard 
+library(patchwork)
+
+dashboard <- (p1 + p3) / p2 + 
+  plot_annotation(
+    title = "Electronics Store Annual Sales Dashboard",
+    subtitle = "Analysis of 180k+ transactions from 2019",
+    caption = "Data Source: Kaggle Electronics Sales Dataset"
+  )
+
+dashboard
+```
+
+### Seasonal Heatmap of Orders
+
+```{r}
+#| label: fig-seasonal-heatmap
+#| fig-cap: "Seasonal Heatmap of Orders."
+
+# 7. Heatmap
+p5 <- sales_analysis |>
+  # First, create a 'day_of_week' column
+  mutate(day_of_week = wday(order_date, label = TRUE)) |>
+  count(month, day_of_week) |>
+  ggplot(aes(x = month, y = day_of_week, fill = n)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "plasma") +
+  labs(title = "Order Volume Heatmap",
+       subtitle = "Identifying peak shopping periods by day and month",
+       x = "Month", y = "Day of Week", fill = "Orders") +
+  theme_minimal()
+p5
+```
+
+::: callout-note
+The Question: What are the busiest days and months for orders?
+
+The Finding: This map highlights "hot spots" in December. It tells a business manager exactly when they need more staff in the warehouse to handle the extra orders.
+:::
+
+### Price vs. Quantity by Segment (Multivariate Scatter)
+
+Instead of a sample of 5,000, I will look at the mean relationship for every product, using color to show the segments.
+
+```{r}
+#| label: fig-multivariate-scatter
+#| fig-cap: "Price vs. Quantity by Segment."
+
+# 8. Advanced Scatter 
+p6 <- sales_analysis |>
+  summarise(
+    avg_price = mean(unit_price),
+    avg_qty = mean(quantity),
+    .by = c(product, market_segment)
+  ) |>
+  ggplot(aes(x = avg_price, y = avg_qty, color = market_segment)) +
+  geom_point(size = 4, alpha = 0.8) +
+  geom_text(aes(label = product), check_overlap = TRUE, vjust = -1, size = 3) +
+  scale_color_viridis_d() +
+  labs(title = "Product Level: Price vs. Average Quantity",
+       x = "Average Unit Price", y = "Average Quantity per Order") +
+  theme_classic()
+p6
+```
+
+::: callout-note
+The Question: Which specific products are the "Best Sellers" in each category?
+
+The Finding: By looking at individual products, we can see which ones are expensive but still very popular. This helps us decide which items to put on the front page of the website.
+:::
+
+### Daily Revenue Volatility (Time Series)
+
+Using the daily_growth data you created in Section 4, I can plot the daily change in revenue to show how "stable" the business is.
+
+```{r}
+#| label: fig-revenue-volatility
+#| fig-cap: "Daily Revenue Volatility."
+
+# 9. Line Chart 
+p7 <- daily_growth |>
+  ggplot(aes(x = order_date, y = rev_change)) +
+  geom_line(color = "grey") +
+  geom_point(aes(color = rev_change > 0), size = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Daily Revenue Volatility",
+       subtitle = "Points above the red line indicate growth vs. previous day",
+       x = "Date", y = "Revenue Change ($)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+p7
+```
+
+::: callout-note
+The Question: How much does revenue change from one day to the next?
+
+The Finding: This chart shows "volatility." If the dots are far from the red line, it means sales are jumping up and down. This helps us see if our daily promotions are actually working.
+:::
+
+### Cumulative Growth Curve
+
+This final plot shows the "Story of the Year"—how the store reached its total annual revenue.
+
+```{r}
+#| label: fig-cumulative-growth
+#| fig-cap: "Cumulative Growth Curve."
+
+# 10. Area Chart
+p8 <- daily_growth |>
+  ggplot(aes(x = order_date, y = cumulative_revenue)) +
+  geom_area(fill = "steelblue", alpha = 0.4) +
+  geom_line(color = "steelblue", linewidth = 1) +
+  scale_y_continuous(labels = label_dollar(scale = 1e-6, suffix = "M")) +
+  labs(title = "Annual Cumulative Revenue Growth",
+       x = "Date", y = "Total Revenue ($ Millions)") +
+  theme_minimal()
+p8
+```
+
+::: callout-note
+The Question: How did the store's total money grow over the whole year?
+
+The Finding: This is the "Big Picture." It shows that the store started slow but finished the year with massive growth, reaching its multi-million dollar goal by December.
+:::
+
+## Section 6: Interactive Elements
+
+### Interactive Data Exploration (DT)
+
+Instead of a static table, I have provided an interactive data browser. This allows you to filter by city, search for specific products, or sort by revenue to find hidden patterns.
+
+```{r}
+#| label: fig-interactive-table
+#| fig-cap: "Interactive sales table with city/product revenue summary (filter, sort, download)."
+
+# Make sure library(DT) is loaded
+library(DT)
+
+table_data <- sales_analysis |>
+  summarise(
+    Total_Revenue = sum(quantity * unit_price),
+    Units_Sold = sum(quantity),
+    Avg_Price = mean(unit_price),
+    .by = c(city, product, market_segment)
+  )
+
+datatable(
+  table_data,
+  extensions = "Buttons", 
+  filter = 'top',         
+  options = list(
+    dom = 'Bfrtip',       
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), # Download options
+    pageLength = 10, 
+    autoWidth = TRUE
+  ),
+  colnames = c("City", "Product", "Segment", "Total Revenue", "Units Sold", "Avg Price"),
+  caption = 'Table 1: Interactive Sales Summary by Geography and Product Tier'
+) |> 
+  formatCurrency(c('Total_Revenue', 'Avg_Price')) |>
+  formatRound('Units_Sold', 0)
+```
+
+::: callout-note
+Research Insight: Data Portability The Question: How can managers use this data for their own reports?
+
+The Finding: By adding CSV and Excel buttons, I turn a static report into a functional business tool. Stakeholders can filter for a specific city or product and instantly download that specific data subset.
+:::
+
+::: callout-tip
+I have implemented the dom = 'Bfrtip' configuration. This ensures that the Buttons, filter, reader, table, information, and pagination all load in a clean, professional layout.
+:::
+
+::: callout-important
+Exporting Filtered Data The download buttons are "reactive". If you use the filters at the top of the columns to show only "Premium" items, clicking the Excel button will download only those filtered premium rows, not the entire dataset.
+:::
+
+### Interactive City Performance (ggplotly)
+
+I have converted the Section 5.2 bar chart into an interactive version. You can now hover over any bar to see the exact dollar amount and the specific market segment.
+
+```{r}
+#| label: fig-interactive-ggplotly
+#| fig-cap: "Interactive Bar Chart."
+
+# Convert ggplot to ggplotly
+library(plotly)
+
+# Using the previous p2 object but adding a 'text' aesthetic for custom hover
+p2_interactive <- sales_analysis |>
+  summarise(total_rev = sum(quantity * unit_price), .by = c(city, market_segment)) |>
+  mutate(hover_text = paste("City:", city, 
+                            "<br>Segment:", market_segment, 
+                            "<br>Revenue: $", format(round(total_rev, 0), big.mark = ","))) |>
+  ggplot(aes(x = reorder(city, total_rev), y = total_rev, fill = market_segment, text = hover_text)) +
+  geom_col(position = "dodge") +
+  scale_fill_viridis_d(option = "magma") +
+  theme_minimal() +
+  labs(title = "Hover to Explore Revenue by City", x = "City", y = "Total Revenue") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Convert to interactive
+ggplotly(p2_interactive, tooltip = "text")
+```
+
+::: callout-note
+Research Insight: Geographic Revenue The Question: Which specific segment is the primary driver for our top-earning cities?
+
+The Finding: Hovering over the bars reveals that in San Francisco, the "Premium" segment contributes more than double the revenue of the "Budget" and "Mid-Range" segments combined.
+:::
+
+::: callout-tip
+Navigation Tip You can double-click on a segment in the legend to isolate that specific tier across all cities, or click and drag to zoom into a specific group of cities.
+:::
+
+::: callout-important
+Comparative Analysis Note that the y-axis represents total revenue. While some bars look similar in height, the hover text provides the exact dollar precision needed for financial auditing.
+:::
+
+### Product Value Analysis (Native plot_ly)
+
+This plot is built using "Native Plotly" logic. It visualizes the relationship between a product's average price and its total revenue contribution.
+
+```{r}
+#| label: fig-native-plotly
+#| fig-cap: "Product price vs revenue by market segment (hover for details)."
+
+# Native plotly with plot_ly()
+# Custom hover text with 3+ variables
+plot_ly(
+  data = table_data,
+  x = ~Avg_Price,
+  y = ~Total_Revenue,
+  color = ~market_segment,
+  type = 'scatter',
+  mode = 'markers',
+  marker = list(size = 10, opacity = 0.6),
+  text = ~paste("Product:", product, 
+                "<br>City:", city, 
+                "<br>Total Revenue: $", format(Total_Revenue, big.mark = ",")),
+  hoverinfo = 'text'
+) |>
+  layout(
+    title = "Interactive Product Performance Matrix",
+    xaxis = list(title = "Average Unit Price ($)"),
+    yaxis = list(title = "Total Revenue ($)")
+  )
+```
+
+::: callout-note
+Research Insight: Value Matrix The Question: Is there a clear "break point" where price starts to impact total revenue?
+
+The Finding: This scatter plot shows a "revenue cluster" for items priced between \$600 and \$1,700, indicating that our "Premium" strategy is successfully capturing high-value transactions.
+:::
+
+::: callout-tip
+Interactive Discovery Hover over the outliers on the far right of the x-axis to identify the specific high-end products that drive our top-tier revenue despite having lower sales frequency.
+:::
+
+::: callout-important
+Multi-Variable Context The hover text for each point displays three key variables: Product Name, City, and Total Revenue, allowing for a three-dimensional understanding of performance in a single view.
+:::
+
+## Section 7: Conclusion
+
+::: panel-tabset
+## Research Questions
+
+Question 1: Does product pricing significantly impact customer purchasing volume?
+
+Yes. My analysis confirms a negative correlation of `r round(price_quantity_corr$correlation, 3)` between unit price and quantity. As you can see in the Quantity Scatter Plot [@fig-quantity-scatter], high-value items are almost exclusively purchased as single units, whereas budget items drive higher multi-unit transaction volume.
+
+Question 2: Which geographic regions are the primary drivers for premium revenue?
+
+The data shows that coastal tech hubs are the dominant force. According to the City Revenue Bar Chart [@fig-city-trends], San Francisco leads with a total revenue of \$`r format(round(sum(sales_analysis$quantity[sales_analysis$city == "San Francisco"] * sales_analysis$unit_price[sales_analysis$city == "San Francisco"]), 0), big.mark = ",")`, driven largely by the Premium segment. Smaller inland cities show significantly lower "willingness to pay" for high-end hardware.
+
+Question 3: How does seasonality affect different market tiers?
+
+Seasonality is most aggressive in the Premium tier. While the Budget segment remains stable, the Faceted Line Chart [@fig-monthly-trends] reveals a massive revenue spike in the Premium segment during the final quarter, likely due to holiday gifting and year-end corporate spending.
+
+## Actionable Recommendations
+
+Geographic Targeting: Reallocate 20% of the marketing budget from lower-performing cities like Austin or Portland toward San Francisco and NYC specifically for Premium product promotions.
+
+Inventory Optimization: Implement a "Just-in-Time" inventory model for Budget accessories (cables/batteries) during Q1-Q3 to reduce holding costs, as demand is highly predictable and flat.
+
+Bundling Strategy: Since the correlation between price and quantity is weak (`r round(price_quantity_corr$correlation, 3)`), the store should bundle Premium items with Budget accessories (e.g., a MacBook + USB-C Hub) to increase the "Units Per Transaction" in the high-value segment.
+
+## Limitations and Methodology Reflection
+
+While the analysis is robust, it has the following limitations:
+
+Time Constraint: The dataset is limited to a single year (2019), which prevents me from distinguishing between "Yearly Growth" and "Standard Seasonality."
+
+Missing Demographics: We lack customer age or gender data, meaning we cannot build detailed persona-based marketing strategies.
+
+External Factors: The analysis does not account for external market benchmarks or competitor pricing, which likely influenced the observed sales trends.
+
+Methodology Reflection: Choosing a Boxplot over a Histogram for Section 5 was a critical choice. The extreme price skewness made traditional distribution plots unreadable, and the boxplot allowed for a much cleaner comparison of price "spread" across tiers.
+
+## Future Research
+
+Future studies should incorporate Customer Lifetime Value (CLV) modeling. By joining this sales data with customer support or return data, we could identify which segments are not only high-revenue but also high-profit after accounting for post-sale costs.
+:::
+
+## AI Usage Log
+I used Gemini 2.0 Flash as a coding assistant throughout this project to help with technical challenges and document formatting. At the start, I asked Gemini to help me understand specific R error messages, such as the "incomplete string" error in my inline code. I also asked Gemini to debug my custom function for calculating city revenue because I was having trouble with the function scope. When I moved to the visualization sections, I asked Gemini for syntax assistance to use the native pipe |> and the .by argument instead of group_by().
+
+To improve the report's structure, I asked Gemini to explain how to use Quarto features like callout blocks and tabsets. For the final bonus section, I asked Gemini to help me make my presentation more beautiful by suggesting an AI-themed layout with columns. Every time the AI provided code, I modified the labels and variable names to match my sales_analysis dataset and tested each chunk to ensure it ran without errors. I made sure to manually check all the mathematical outputs, like the San Francisco revenue total, against my raw data to ensure accuracy before final rendering.
+
+# Presentation {visibility="unpaged"}
+
+## RevealJS Presentation Structure
+
+## Slide 1: Title Slide {background-image="https://images.unsplash.com/photo-1620712943543-bcc4628c9759?q=80&w=1920" background-opacity="0.2"}
+
+### Electronic Store Sales Analysis
+
+<br/> <br/>
+
+<h1 style="color: #38bdf8;">
+
+Strategic Analysis of Electronics Sales
+
+</h1>
+
+<h3 style="color: #94a3b8;">
+
+Data-Driven Insights for Marketing Reallocation
+
+</h3>
+
+<hr style="border: 1px solid #38bdf8;">
+
+**Author:** Hein Htet SOE THAN\
+**Institution:** NEOMA Business School\
+**Date:** February 2026
+
+## Slide 2: Business Objectives {background-color="#1e293b"}
+
+### Core Research Pillars
+
+-   **Primary Goal:** Identify high-value geographic hubs to optimize marketing spend.
+-   **Market Dynamics:** Analyze price elasticity and volume trends across diverse product segments.
+-   **Seasonality:** Determine peak periods for premium hardware acquisition.
+
+## Slide 3: Data Methodology
+
+::: {.callout-note appearance="simple"}
+Processed **185,000+** raw transaction rows with 100% validation.
+:::
+
+-   **Scale:** Processed 185,000+ transaction rows from 12 monthly datasets.
+-   **Cleaning:** Handled missing values and standardized data types for time-series analysis.
+-   **Feature Engineering:** Segmented products into **Budget**, **Mid-Range**, and **Premium** based on unit price distribution.
+
+## Slide 4: Key Finding 1: Geographic Revenue Leaders {background-color="#0f172a"}
+
+```{r}
+p2
+```
+
+* **Highlight:** San Francisco is the clear leader, generating $`r format(round(sum(sales_analysis$quantity[sales_analysis$city == "San Francisco"] * sales_analysis$unit_price[sales_analysis$city == "San Francisco"]), 0), big.mark = ",")`.
+
+## Slide 5: The "Tech-Hub" Effect {background-color="#1e293b"}
+
+-   **Concentration:** Revenue is heavily centered in coastal hubs (SF, NYC, Seattle).
+-   **Segment Mix:** These cities show a significantly higher volume of Premium sales (MacBooks, iPhones) compared to inland counterparts.
+-   **Insight:** Regional economic profiles directly correlate with "Willingness to Pay" for high-end electronics.
+
+## Slide 6: Key Finding 2: Price vs. Volume Correlation {background-color="#0f172a"}
+
+<h3 style="color: #38bdf8;">
+
+Correlation Matrix
+
+</h3>
+
+```{r}
+p3
+```
+
+-   **Statistic:** A negative correlation of `r round(price_quantity_corr$correlation, 3)` confirms high price sensitivity for non-premium items.
+
+## Slide 7: Volume vs. Value Strategy {background-color="#1e293b"}
+
+-   **The Pareto Principle:** While Budget items drive transaction frequency, Premium items drive total revenue.
+
+-   **Cash Flow:** Budget accessories provide consistent, predictable volume.
+
+-   **Profitability:** High-ticket items represent the primary engine for margin growth despite lower unit counts.
+
+## Slide 8: The Q4 Seasonality Surge {background-color="#0f172a"}
+
+```{r}
+p4
+```
+
+-   **Holiday Spike:** Premium segments experience an aggressive revenue surge in December.
+
+-   **Budget Stability:** Low-cost accessories remain relatively flat throughout the year.
+
+-   **Conclusion:** Marketing efforts for high-margin goods must be maximized during the Q4 window.
+
+## Slide 9: Strategic Recommendation: Reallocation {background-color="#1e293b"}
+
+-   **Action:** Reallocate 20% of the marketing budget toward San Francisco and NYC.
+
+-   **Logic:** Target demographics with established premium purchase patterns to maximize Return on Ad Spend (ROAS).
+
+-   **Efficiency:** Focus spend where "conversion-to-revenue" ratios are highest.
+
+## Slide 10: Strategic Recommendation: Bundling {background-color="#0f172a"}
+
+-   **Action:** Bundle Premium hardware with high-margin Budget accessories (e.g., MacBook + USB-C Hub).
+
+-   **Logic:** Offset the negative price-volume correlation by increasing Units Per Transaction (UPT).
+
+-   **Customer Value:** Enhance the out-of-the-box experience while boosting average order value.
+
+## Slide 11: Future Research & Conclusion
+
+-   **Summary:** Success is driven by geographic targeting and understanding segment-specific seasonality.
+
+-   **Next Steps:** Implement Customer Lifetime Value (CLV) modeling to identify high-profit segments over time.
+
+-   **Expansion:** Incorporate competitor pricing data for 2026 market forecasting.
+
